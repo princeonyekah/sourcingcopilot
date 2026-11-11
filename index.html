@@ -85,7 +85,7 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
     <div class="barbtns"><button type="button" class="keybtn off" id="syncbtn" aria-haspopup="dialog"><span class="dot"></span><span id="synclbl">Cloud sync</span></button><button type="button" class="keybtn" id="keybtn" aria-haspopup="dialog"><span class="dot"></span><span id="keylbl">API key</span></button></div>
   </div>
 </header>
-<div class="reloadbar" id="reloadbar" hidden><span>Newer data arrived from another device.</span><button type="button" id="reloadgo">Reload to use it</button></div>
+<div class="reloadbar" id="reloadbar" hidden><span>Newer data arrived from another device.</span><button type="button" id="reloadgo">Reload to use it</button><button type="button" id="reloadx" aria-label="Dismiss" title="Dismiss">Dismiss</button></div>
 <div class="kmodal" id="smodal" hidden role="dialog" aria-modal="true" aria-labelledby="stitle">
   <div class="ksheet wide">
     <h2 id="stitle">Cloud sync</h2>
@@ -404,6 +404,7 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
   sm.addEventListener('click',function(e){if(e.target===sm)closeSync()});
   document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!sm.hidden)closeSync()});
   document.getElementById('reloadgo').addEventListener('click',function(){location.reload()});
+  document.getElementById('reloadx').addEventListener('click',function(){document.getElementById('reloadbar').hidden=true});
   document.getElementById('s-copysql').addEventListener('click',function(){var b=this;try{navigator.clipboard.writeText(SQL).then(function(){b.textContent='Copied'},function(){})}catch(e){}});
   function afterConnect(r){
     if(r.conflicts.length){SYNC.setSt('warn','Choose which copy to keep.');pendC=r;sRender();return}
