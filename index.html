@@ -191,7 +191,9 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
     function setSt(state,msg){st.state=state;st.msg=msg||'';onChange(st)}
     function err(status,msg){var e=new Error(msg);e.status=status;return e}
     function explain(e){
-      if(e&&e.status===401)return 'Signed out. Sign in again.';
+      if(e&&e.expired)return 'Your session ended. Sign in again.';
+      if(e&&e.status===401)return 'Supabase rejected the request ('+(e.message||'401')+'). Check the project URL and public key, then sign in again.';
+      if(e&&e.status===403&&/secret|service/i.test(e.message||''))return 'That is a secret key. Use the publishable or anon key instead.';
       if(e&&(e.status===404||e.code==='PGRST205'||e.code==='42P01'))return 'The kv table was not found. Run the setup SQL in Supabase first.';
       if(e&&e.status===0)return 'Offline. Changes will sync when the connection is back.';
       return (e&&e.message)||'Something went wrong.';
@@ -206,17 +208,37 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
           return j})},function(){throw err(0,'Offline')});
     }
     function saveSes(j){ses={access:j.access_token,refresh:j.refresh_token,exp:Date.now()+(j.expires_in||3600)*1000,uid:j.user&&j.user.id,email:j.user&&j.user.email};jset(SESK,ses)}
-    function ensure(){
-      if(!ses)return Promise.reject(err(401,'Not signed in'));
-      if(ses.exp-60000>Date.now())return Promise.resolve();
-      return req('/auth/v1/token?grant_type=refresh_token',{method:'POST',body:JSON.stringify({refresh_token:ses.refresh})}).then(saveSes,function(e){if(e.status===400||e.status===401){ses=null;try{localStorage.removeItem(SESK)}catch(x){}throw err(401,'Signed out')}throw e});
+    var refreshing=null;
+    function expire(){ses=null;try{localStorage.removeItem(SESK)}catch(x){}var e=err(401,'Session ended');e.expired=true;return e}
+    function refresh(){
+      if(refreshing)return refreshing;
+      var used=ses.refresh;
+      refreshing=req('/auth/v1/token?grant_type=refresh_token',{method:'POST',body:JSON.stringify({refresh_token:used})}).then(saveSes,function(e){
+        var s2=jget(SESK);/* another tab may have refreshed already */
+        if(s2&&s2.refresh&&s2.refresh!==used){ses=s2;return}
+        if(e.status===400||e.status===401||e.status===403)throw expire();
+        throw e;
+      }).then(function(){refreshing=null},function(e){refreshing=null;throw e});
+      return refreshing;
     }
-    function pull(){return ensure().then(function(){return req('/rest/v1/kv?select=key,value,updated_at',{},true)}).then(function(rows){var m={};(rows||[]).forEach(function(r){m[r.key]=r});return m})}
+    function ensure(force){
+      if(!ses)return Promise.reject(err(401,'Not signed in'));
+      if(!force&&ses.exp-60000>Date.now())return Promise.resolve();
+      return refresh();
+    }
+    /* Call the data API; on a 401 refresh the token once and retry before giving up. */
+    function authed(fn){
+      return ensure().then(fn).catch(function(e){
+        if(e&&e.status===401&&!e.expired&&ses)return ensure(true).then(fn);
+        throw e;
+      });
+    }
+    function pull(){return authed(function(){return req('/rest/v1/kv?select=key,value,updated_at',{},true)}).then(function(rows){var m={};(rows||[]).forEach(function(r){m[r.key]=r});return m})}
     function pushKeys(keys,keepalive){
       var rows=[];keys.forEach(function(k){var L=local(k);if(L)rows.push({key:k,value:L.obj,updated_at:new Date().toISOString(),_h:L.h})});
       if(!rows.length)return Promise.resolve(0);
       var body=rows.map(function(r){return {key:r.key,value:r.value,updated_at:r.updated_at}});
-      return ensure().then(function(){return req('/rest/v1/kv?on_conflict=user_id,key',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(body),keepalive:keepalive},true)}).then(function(){
+      return authed(function(){return req('/rest/v1/kv?on_conflict=user_id,key',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(body),keepalive:keepalive},true)}).then(function(){
         rows.forEach(function(r){meta[r.key]={h:r._h,rt:r.updated_at,lt:Date.now()}});jset(METAK,meta);return rows.length});
     }
     function applyRemote(key,R){
@@ -277,16 +299,36 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
       onChange:function(f){onChange=f},
       configured:function(){return !!(base()&&cfg.anon)},
       signedIn:function(){return !!ses},
-      saveCfg:function(c){cfg={url:c.url.trim(),anon:c.anon.trim(),email:(c.email||'').trim()};jset(CFGK,cfg)},
+      saveCfg:function(c){cfg={url:c.url,anon:c.anon,email:(c.email||'').trim()};jset(CFGK,cfg)},
+      cleanUrl:function(u){u=String(u||'').trim().replace(/^["']|["']$/g,'');if(/^[a-z0-9]{15,25}$/i.test(u))u='https://'+u+'.supabase.co';if(!/^https?:\/\//i.test(u))u='https://'+u;try{var x=new URL(u);return x.origin}catch(e){return ''}},
+      cleanKey:function(k){return String(k||'').replace(/^["']|["']$/g,'').replace(/\s+/g,'')},
+      keyProblem:function(k){
+        if(/^sb_secret_/i.test(k))return 'That is a secret key. Use the publishable key (sb_publishable_...) or the anon key.';
+        if(/^eyJ/.test(k)){try{var p=JSON.parse(atob(k.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));if(p.role==='service_role')return 'That is the service_role key. Use the anon key instead.'}catch(e){}}
+        else if(!/^sb_publishable_/i.test(k))return 'That does not look like a Supabase public key. It starts with sb_publishable_ or eyJ.';
+        return '';
+      },
+      friendly:function(e,mode){
+        var m=(e&&e.message)||'';
+        if(e&&e.status===0)return 'Could not reach Supabase. Check the project URL and your internet connection.';
+        if(/invalid login/i.test(m))return 'Wrong email or password. If you have not made an account yet, press Create account.';
+        if(/not confirmed/i.test(m))return 'Email not confirmed. Open the email from Supabase and click the link, or turn off Confirm email in Supabase (Authentication, Sign In / Providers, Email).';
+        if(/already registered|already exists/i.test(m))return 'That email already has an account. Press Sign in.';
+        if(/api key|apikey|invalid jwt|no api key/i.test(m)||(e&&e.status===401))return 'Supabase rejected the public key. Copy it again from Project Settings, API Keys (the publishable or anon key, not the secret key).';
+        if(e&&e.status===404)return 'Project URL not found. It should look like https://yourproject.supabase.co';
+        if(e&&e.status===429)return 'Too many attempts. Wait a minute and try again.';
+        return explain(e);
+      },
       auth:function(mode,email,pw){
         setSt('busy',mode==='up'?'Creating account...':'Signing in...');
         var p=mode==='up'?req('/auth/v1/signup',{method:'POST',body:JSON.stringify({email:email,password:pw})}):req('/auth/v1/token?grant_type=password',{method:'POST',body:JSON.stringify({email:email,password:pw})});
         return p.then(function(j){
           if(j&&j.access_token){saveSes(j);return 'ok'}
+          if(mode==='up'&&j&&j.user&&Array.isArray(j.user.identities)&&!j.user.identities.length)return 'exists';
           return 'confirm';
         });
       },
-      signOut:function(){var t=ses&&ses.access;ses=null;try{localStorage.removeItem(SESK)}catch(e){}if(t&&base())fetch(base()+'/auth/v1/logout',{method:'POST',headers:{apikey:cfg.anon,Authorization:'Bearer '+t}}).catch(function(){});setSt('off','Signed out.')},
+      signOut:function(){var t=ses&&ses.access;ses=null;refreshing=null;try{localStorage.removeItem(SESK)}catch(e){}if(t&&base())fetch(base()+'/auth/v1/logout',{method:'POST',headers:{apikey:cfg.anon,Authorization:'Bearer '+t}}).catch(function(){});setSt('off','Signed out.')},
       reconcile:reconcile,resolve:resolve,tick:tick,check:check,startTimer:startTimer,explain:explain,setSt:setSt,
       boot:function(cb){
         if(!this.configured()||!ses){setSt('off','');cb();return}
@@ -371,13 +413,21 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
   var pendC=null;
   function connect(mode){
     var url=document.getElementById('s-url').value,anon=document.getElementById('s-anon').value,em=document.getElementById('s-email').value.trim(),pw=document.getElementById('s-pw').value;
-    if(!/^https:\/\/.+/.test(url.trim())||!anon.trim()||!em||!pw){SYNC.setSt('err','Fill in the project URL, public key, email and password.');return}
-    if(pw.length<6&&mode==='up'){SYNC.setSt('err','Use a password of at least 6 characters.');return}
+    url=SYNC.cleanUrl(url);anon=SYNC.cleanKey(anon);
+    if(!url||!anon||!em||!pw){SYNC.setSt('err','Fill in the project URL, public key, email and password.');sRender();return}
+    var kp=SYNC.keyProblem(anon);if(kp){SYNC.setSt('err',kp);sRender();return}
+    if(pw.length<6&&mode==='up'){SYNC.setSt('err','Use a password of at least 6 characters.');sRender();return}
+    document.getElementById('s-url').value=url;document.getElementById('s-anon').value=anon;
     SYNC.saveCfg({url:url,anon:anon,email:em});
     SYNC.auth(mode,em,pw).then(function(res){
-      if(res==='confirm'){SYNC.setSt('warn','Account created. Open the email from Supabase to confirm, then press Sign in.');return}
-      SYNC.setSt('busy','Syncing...');return SYNC.reconcile().then(afterConnect);
-    }).catch(function(e){SYNC.setSt('err',SYNC.explain(e))});
+      if(res==='exists'){SYNC.setSt('warn','That email already has an account. Press Sign in.');sRender();return}
+      if(res==='confirm'){SYNC.setSt('warn','Account created. Open the email from Supabase to confirm, then press Sign in. (Or turn off Confirm email in Supabase.)');sRender();return}
+      SYNC.setSt('busy','Syncing...');sRender();
+      return SYNC.reconcile().then(afterConnect,function(e){
+        /* Signed in fine; only the data step failed. Say so, keep the session. */
+        SYNC.setSt('err','Signed in, but the sync step failed: '+(e.status===404||e.code==='PGRST205'||e.code==='42P01'?'the kv table was not found. Run the setup SQL in Supabase, then press Sync now.':SYNC.explain(e)));sRender();
+      });
+    }).catch(function(e){SYNC.setSt('err',SYNC.friendly(e,mode));sRender()});
   }
   document.getElementById('s-in').addEventListener('click',function(){connect('in')});
   document.getElementById('s-up').addEventListener('click',function(){connect('up')});
