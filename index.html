@@ -48,6 +48,15 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
 .keybtn:hover{border-color:var(--muted)}
 .keybtn:focus-visible,.kmodal button:focus-visible,.kmodal input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 .dot{width:9px;height:9px;border-radius:50%;background:#c98a00}.keybtn.on .dot{background:#2a9d62}
+.barbtns{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}.barbtns .keybtn{margin-left:0}
+.keybtn.off .dot{background:#8a9a95}.keybtn.err .dot{background:#c0392b}.keybtn.busy .dot{background:#3a41c6}
+.reloadbar{position:sticky;top:0;z-index:40;background:#fdf3d8;color:#5a4300;border-bottom:1px solid #e8d48f;padding:8px 16px;display:flex;gap:12px;align-items:center;justify-content:center;font-size:14px}
+.reloadbar button{font:inherit;font-weight:500;border:1px solid #c9b25f;background:#fff;color:#3a2f0d;border-radius:8px;padding:4px 12px;cursor:pointer}
+.ksheet.wide{max-width:560px;max-height:92vh;overflow:auto}
+.ksheet label.f{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
+.ksheet pre{margin:6px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;max-height:220px;overflow:auto}
+.ksheet details>summary{cursor:pointer;color:var(--accent);font-weight:500;font-size:14px;width:fit-content}
+.smsg{font-size:14px;border-radius:8px;padding:8px 12px;background:var(--bg)}.smsg.err{background:#fbe9e0;color:#a3441a}.smsg.ok{background:#e3f3ea;color:#17713f}.smsg.warn{background:#fdf3d8;color:#7a5a00}
 .kmodal[hidden]{display:none}
 .kmodal{position:fixed;inset:0;z-index:50;background:rgba(10,15,14,.55);display:flex;align-items:center;justify-content:center;padding:16px}
 .ksheet{background:var(--surface);border:1px solid var(--line);border-radius:14px;max-width:480px;width:100%;padding:18px;display:flex;flex-direction:column;gap:12px}
@@ -58,7 +67,7 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
 .ksheet button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .ksheet button.danger{color:#a3441a}
 .kmsg{font-size:13px;min-height:18px}
-@media (max-width:560px){.keybtn{margin-left:0}}
+@media (max-width:560px){.barbtns{margin-left:0}}
 </style>
 </head>
 <body>
@@ -73,9 +82,34 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
       <button class="tab" role="tab" id="t-calibration" data-tab="calibration" aria-selected="false" aria-controls="p-calibration">Calibration Game</button>
       <button class="tab" role="tab" id="t-feed" data-tab="feed" aria-selected="false" aria-controls="p-feed">Approved Feed</button>
     </div>
-    <button type="button" class="keybtn" id="keybtn" aria-haspopup="dialog"><span class="dot"></span><span id="keylbl">API key</span></button>
+    <div class="barbtns"><button type="button" class="keybtn off" id="syncbtn" aria-haspopup="dialog"><span class="dot"></span><span id="synclbl">Cloud sync</span></button><button type="button" class="keybtn" id="keybtn" aria-haspopup="dialog"><span class="dot"></span><span id="keylbl">API key</span></button></div>
   </div>
 </header>
+<div class="reloadbar" id="reloadbar" hidden><span>Newer data arrived from another device.</span><button type="button" id="reloadgo">Reload to use it</button></div>
+<div class="kmodal" id="smodal" hidden role="dialog" aria-modal="true" aria-labelledby="stitle">
+  <div class="ksheet wide">
+    <h2 id="stitle">Cloud sync</h2>
+    <p class="note" style="margin:0">Keeps your projects, saved searches, ID book, sheets and decisions in your own Supabase database, so nothing is lost if this browser is cleared. Your Claude API key is never uploaded.</p>
+    <div id="sstate" class="smsg" aria-live="polite"></div>
+    <div id="sconf" hidden>
+      <p style="margin:0 0 8px;font-size:14px"><b>This browser and the cloud both have saved data.</b> Pick the one to keep. The other is kept as a backup in this browser.</p>
+      <div class="krow"><button type="button" class="primary" id="sc-cloud">Keep the cloud copy</button><button type="button" id="sc-local">Keep this browser's copy</button></div>
+    </div>
+    <div id="sform">
+      <label class="f">Project URL<input type="text" id="s-url" placeholder="https://abcdxyz.supabase.co" autocomplete="off" spellcheck="false"></label>
+      <label class="f">Public key (anon or publishable)<input type="password" id="s-anon" placeholder="eyJ... or sb_publishable_..." autocomplete="off" spellcheck="false"></label>
+      <label class="f">Email<input type="text" id="s-email" autocomplete="username"></label>
+      <label class="f">Password<input type="password" id="s-pw" autocomplete="current-password"></label>
+      <div class="krow"><button type="button" class="primary" id="s-in">Sign in</button><button type="button" id="s-up">Create account</button></div>
+    </div>
+    <div id="sacct" hidden><div class="krow"><button type="button" class="primary" id="s-now">Sync now</button><button type="button" id="s-out">Sign out</button></div></div>
+    <details><summary>One-time setup in Supabase</summary>
+      <p class="note" style="margin:8px 0 0">1. Create a free project at supabase.com. 2. Open the SQL Editor, paste this and run it. 3. Under Project Settings, API, copy the Project URL and the anon public key into the boxes above. 4. Under Authentication, Providers, Email, turn off "Confirm email" if you want to sign in straight away.</p>
+      <pre id="ssql"></pre><div class="krow" style="margin-top:8px"><button type="button" id="s-copysql">Copy SQL</button></div>
+    </details>
+    <div class="krow"><button type="button" id="s-bak" hidden>Download local backups</button><span style="flex:1"></span><button type="button" id="s-close">Close</button></div>
+  </div>
+</div>
 <div class="kmodal" id="kmodal" hidden role="dialog" aria-modal="true" aria-labelledby="ktitle">
   <div class="ksheet">
     <h2 id="ktitle">Claude API key</h2>
@@ -140,6 +174,132 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
       .then(function(r){kmsg.textContent=r.ok?'Key works.':(r.status===401?'That key was not accepted.':'Anthropic returned an error ('+r.status+').')})
       .catch(function(){kmsg.textContent='Could not reach Anthropic. Check your connection.'});
   });
+  /* ---------- Cloud sync (Supabase). One table, one row per saved tool state, only your own rows. ---------- */
+  var SYNC=(function(){
+    var KEYS=['sourcing-copilot-v1','sn-company-links-v2','saved-searches-v1','li-url-checker-v2','profile-calibration-v1','profile-calibration-round-v1','approved-feed-projects-v1','approved-feed-decisions-v1'];
+    var CFGK='sc-sync-cfg',SESK='sc-sync-session',METAK='sc-sync-meta',BAK='sc-sync-bak-';
+    function jget(k){try{return JSON.parse(localStorage.getItem(k)||'null')}catch(e){return null}}
+    function jset(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+    var cfg=jget(CFGK)||{url:'',anon:'',email:''},ses=jget(SESK),meta=jget(METAK)||{};
+    var st={state:'off',msg:'',last:0},held={},busy=false,timer=null,onChange=function(){},pendingConflicts=null;
+    function base(){return String(cfg.url||'').trim().replace(/\/+$/,'')}
+    function canon(o){if(Array.isArray(o))return '['+o.map(canon).join(',')+']';if(o&&typeof o==='object')return '{'+Object.keys(o).sort().map(function(k){return JSON.stringify(k)+':'+canon(o[k])}).join(',')+'}';return JSON.stringify(o)}
+    function hash(s){var h1=0xdeadbeef,h2=0x41c6ce57,ch;for(var i=0;i<s.length;i++){ch=s.charCodeAt(i);h1=Math.imul(h1^ch,2654435761);h2=Math.imul(h2^ch,1597334677)}
+      h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);return (4294967296*(2097151&h2)+(h1>>>0)).toString(36)+s.length}
+    function clean(key,o){if(key==='sn-company-links-v2'&&o&&typeof o==='object'&&!Array.isArray(o)){o=JSON.parse(JSON.stringify(o));delete o.key}return o}
+    function local(key){var raw=null;try{raw=localStorage.getItem(key)}catch(e){}if(raw==null)return null;var o;try{o=JSON.parse(raw)}catch(e){return null}o=clean(key,o);return {raw:raw,obj:o,h:hash(canon(o))}}
+    function setSt(state,msg){st.state=state;st.msg=msg||'';onChange(st)}
+    function err(status,msg){var e=new Error(msg);e.status=status;return e}
+    function explain(e){
+      if(e&&e.status===401)return 'Signed out. Sign in again.';
+      if(e&&(e.status===404||e.code==='PGRST205'||e.code==='42P01'))return 'The kv table was not found. Run the setup SQL in Supabase first.';
+      if(e&&e.status===0)return 'Offline. Changes will sync when the connection is back.';
+      return (e&&e.message)||'Something went wrong.';
+    }
+    function req(path,opts,useToken){
+      opts=opts||{};var h={apikey:cfg.anon,'Content-Type':'application/json'};
+      if(useToken&&ses)h.Authorization='Bearer '+ses.access;
+      for(var k in (opts.headers||{}))h[k]=opts.headers[k];
+      return fetch(base()+path,{method:opts.method||'GET',headers:h,body:opts.body,keepalive:!!opts.keepalive}).then(function(r){
+        return r.text().then(function(t){var j=null;try{j=t?JSON.parse(t):null}catch(e){}
+          if(!r.ok){var e=err(r.status,(j&&(j.msg||j.message||j.error_description||j.error))||('Error '+r.status));e.code=j&&j.code;throw e}
+          return j})},function(){throw err(0,'Offline')});
+    }
+    function saveSes(j){ses={access:j.access_token,refresh:j.refresh_token,exp:Date.now()+(j.expires_in||3600)*1000,uid:j.user&&j.user.id,email:j.user&&j.user.email};jset(SESK,ses)}
+    function ensure(){
+      if(!ses)return Promise.reject(err(401,'Not signed in'));
+      if(ses.exp-60000>Date.now())return Promise.resolve();
+      return req('/auth/v1/token?grant_type=refresh_token',{method:'POST',body:JSON.stringify({refresh_token:ses.refresh})}).then(saveSes,function(e){if(e.status===400||e.status===401){ses=null;try{localStorage.removeItem(SESK)}catch(x){}throw err(401,'Signed out')}throw e});
+    }
+    function pull(){return ensure().then(function(){return req('/rest/v1/kv?select=key,value,updated_at',{},true)}).then(function(rows){var m={};(rows||[]).forEach(function(r){m[r.key]=r});return m})}
+    function pushKeys(keys,keepalive){
+      var rows=[];keys.forEach(function(k){var L=local(k);if(L)rows.push({key:k,value:L.obj,updated_at:new Date().toISOString(),_h:L.h})});
+      if(!rows.length)return Promise.resolve(0);
+      var body=rows.map(function(r){return {key:r.key,value:r.value,updated_at:r.updated_at}});
+      return ensure().then(function(){return req('/rest/v1/kv?on_conflict=user_id,key',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(body),keepalive:keepalive},true)}).then(function(){
+        rows.forEach(function(r){meta[r.key]={h:r._h,rt:r.updated_at,lt:Date.now()}});jset(METAK,meta);return rows.length});
+    }
+    function applyRemote(key,R){
+      var L=local(key);if(L&&L.raw)try{localStorage.setItem(BAK+key,L.raw)}catch(e){}
+      var v=R.value;
+      if(key==='sn-company-links-v2'&&v&&typeof v==='object'){var cur=null;try{cur=JSON.parse(localStorage.getItem(key)||'null')}catch(e){}v.key=(cur&&cur.key)||''}
+      try{localStorage.setItem(key,JSON.stringify(v))}catch(e){return false}
+      var c=local(key);meta[key]={h:c?c.h:hash(canon(clean(key,v))),rt:R.updated_at,lt:Date.now()};held[key]=true;return true;
+    }
+    /* Compare this browser with the cloud, key by key. */
+    function reconcile(){
+      return pull().then(function(remote){
+        var toPush=[],applied=[],conflicts=[];
+        KEYS.forEach(function(key){
+          var L=local(key),R=remote[key];if(!L&&!R)return;
+          if(!L&&R){if(applyRemote(key,R))applied.push(key);return}
+          if(L&&!R){toPush.push(key);return}
+          var Rh=hash(canon(clean(key,R.value)));
+          if(L.h===Rh){meta[key]={h:L.h,rt:R.updated_at,lt:(meta[key]&&meta[key].lt)||0};return}
+          var m=meta[key];
+          if(!m){conflicts.push(key);return}
+          var lc=m.h!==L.h,rc=m.rt!==R.updated_at;
+          if(!lc&&!rc)return;
+          if(!lc&&rc){if(applyRemote(key,R))applied.push(key);return}
+          if(lc&&!rc){toPush.push(key);return}
+          if(Date.parse(R.updated_at)>(m.lt||0)){if(applyRemote(key,R))applied.push(key)}else toPush.push(key);
+        });
+        jset(METAK,meta);
+        return pushKeys(toPush).then(function(){return {applied:applied,pushed:toPush.length,conflicts:conflicts,remote:remote}});
+      });
+    }
+    function resolve(choice,conflicts,remote){
+      var pushes=[],applied=0;
+      conflicts.forEach(function(k){
+        if(choice==='cloud'){if(applyRemote(k,remote[k]))applied++}
+        else{try{localStorage.setItem(BAK+'cloud-'+k,JSON.stringify(remote[k].value))}catch(e){}pushes.push(k)}
+      });
+      jset(METAK,meta);
+      return pushKeys(pushes).then(function(){return applied});
+    }
+    function changed(){return KEYS.filter(function(k){if(held[k])return false;var L=local(k);return L&&(!meta[k]||meta[k].h!==L.h)})}
+    function tick(){
+      if(busy||!ses)return;
+      var ks=changed();if(!ks.length)return;
+      busy=true;setSt('busy','Saving to the cloud...');
+      pushKeys(ks).then(function(){st.last=Date.now();setSt('ok','Saved to the cloud.')},function(e){setSt(e.status===0?'warn':'err',explain(e))}).then(function(){busy=false});
+    }
+    function startTimer(){if(timer)return;timer=setInterval(tick,4000)}
+    function check(){
+      if(busy||!ses)return;busy=true;
+      reconcile().then(function(r){st.last=Date.now();if(r.applied.length)onChange(st,'reload');else setSt('ok','Up to date.')},function(e){setSt(e.status===0?'warn':'err',explain(e))}).then(function(){busy=false});
+    }
+    document.addEventListener('visibilitychange',function(){if(!document.hidden)check()});
+    window.addEventListener('pagehide',function(){try{var ks=changed();if(ks.length&&ses&&ses.exp>Date.now())pushKeys(ks,true)}catch(e){}});
+    setInterval(function(){if(!document.hidden)check()},90000);
+    return {
+      cfg:function(){return cfg},ses:function(){return ses},st:function(){return st},KEYS:KEYS,
+      onChange:function(f){onChange=f},
+      configured:function(){return !!(base()&&cfg.anon)},
+      signedIn:function(){return !!ses},
+      saveCfg:function(c){cfg={url:c.url.trim(),anon:c.anon.trim(),email:(c.email||'').trim()};jset(CFGK,cfg)},
+      auth:function(mode,email,pw){
+        setSt('busy',mode==='up'?'Creating account...':'Signing in...');
+        var p=mode==='up'?req('/auth/v1/signup',{method:'POST',body:JSON.stringify({email:email,password:pw})}):req('/auth/v1/token?grant_type=password',{method:'POST',body:JSON.stringify({email:email,password:pw})});
+        return p.then(function(j){
+          if(j&&j.access_token){saveSes(j);return 'ok'}
+          return 'confirm';
+        });
+      },
+      signOut:function(){var t=ses&&ses.access;ses=null;try{localStorage.removeItem(SESK)}catch(e){}if(t&&base())fetch(base()+'/auth/v1/logout',{method:'POST',headers:{apikey:cfg.anon,Authorization:'Bearer '+t}}).catch(function(){});setSt('off','Signed out.')},
+      reconcile:reconcile,resolve:resolve,tick:tick,check:check,startTimer:startTimer,explain:explain,setSt:setSt,
+      boot:function(cb){
+        if(!this.configured()||!ses){setSt('off','');cb();return}
+        var done=false,fin=function(){if(!done){done=true;cb()}};
+        setTimeout(fin,5000);setSt('busy','Loading your cloud data...');busy=true;
+        reconcile().then(function(r){st.last=Date.now();held={};if(r.conflicts.length){pendingConflicts=r}setSt(r.conflicts.length?'warn':'ok',r.conflicts.length?'Choose which copy to keep.':'Synced.')},function(e){setSt(e.status===0?'warn':'err',explain(e))}).then(function(){busy=false;startTimer();fin()});
+      },
+      conflicts:function(){return pendingConflicts},clearConflicts:function(){pendingConflicts=null},
+      backups:function(){var o={};for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k.indexOf(BAK)===0)o[k.slice(BAK.length)]=localStorage.getItem(k)}return o},
+      setBusy:function(b){busy=b}
+    };
+  })();
+
   var TABS=['copilot','links','searches','checker','calibration','feed'], loaded={}, KEY='sourcing-copilot-suite-tab';
   function decode(id){
     var b=atob(document.getElementById('app-'+id).textContent.trim()), u=new Uint8Array(b.length);
@@ -179,8 +339,61 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
   window.addEventListener('hashchange',function(){show(location.hash.slice(1),false)});
   var start=location.hash.slice(1);
   if(TABS.indexOf(start)<0)start='copilot';
-  show(start,false);
-  notify();
+  var SQL="create table if not exists public.kv (\n  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,\n  key text not null,\n  value jsonb not null,\n  updated_at timestamptz not null default now(),\n  primary key (user_id, key)\n);\nalter table public.kv enable row level security;\ncreate policy \"own rows select\" on public.kv for select using (auth.uid() = user_id);\ncreate policy \"own rows insert\" on public.kv for insert with check (auth.uid() = user_id);\ncreate policy \"own rows update\" on public.kv for update using (auth.uid() = user_id) with check (auth.uid() = user_id);\ncreate policy \"own rows delete\" on public.kv for delete using (auth.uid() = user_id);";
+  var sm=document.getElementById('smodal'),sb=document.getElementById('syncbtn');
+  document.getElementById('ssql').textContent=SQL;
+  function sStatus(state,msg){
+    var el=document.getElementById('sstate');el.className='smsg '+(state==='ok'?'ok':state==='err'?'err':state==='warn'?'warn':'');
+    el.textContent=msg||(SYNC.signedIn()?'Signed in as '+(SYNC.ses().email||'')+'.':'Not connected. Your data is saved in this browser only.');
+  }
+  function sRender(){
+    var s=SYNC.st(),signed=SYNC.signedIn();
+    sb.className='keybtn '+(signed?(s.state==='err'?'err':s.state==='busy'?'busy':s.state==='warn'?'':'on'):'off');
+    document.getElementById('synclbl').textContent=!signed?'Cloud sync':s.state==='busy'?'Syncing...':s.state==='err'?'Sync problem':s.state==='warn'?'Offline':'Synced';
+    document.getElementById('sform').hidden=signed;document.getElementById('sacct').hidden=!signed;
+    document.getElementById('sconf').hidden=!(pendC||SYNC.conflicts());
+    document.getElementById('s-bak').hidden=!Object.keys(SYNC.backups()).length;
+    sStatus(s.state,s.msg+(signed&&s.last&&s.state==='ok'?' Last sync '+new Date(s.last).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+'.':''));
+  }
+  SYNC.onChange(function(s,flag){sRender();if(flag==='reload')document.getElementById('reloadbar').hidden=false});
+  function openSync(){var c=SYNC.cfg();document.getElementById('s-url').value=c.url||'';document.getElementById('s-anon').value=c.anon||'';document.getElementById('s-email').value=c.email||'';document.getElementById('s-pw').value='';sRender();sm.hidden=false;document.getElementById(SYNC.signedIn()?'s-close':'s-url').focus()}
+  function closeSync(){sm.hidden=true;sb.focus()}
+  sb.addEventListener('click',openSync);document.getElementById('s-close').addEventListener('click',closeSync);
+  sm.addEventListener('click',function(e){if(e.target===sm)closeSync()});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!sm.hidden)closeSync()});
+  document.getElementById('reloadgo').addEventListener('click',function(){location.reload()});
+  document.getElementById('s-copysql').addEventListener('click',function(){var b=this;try{navigator.clipboard.writeText(SQL).then(function(){b.textContent='Copied'},function(){})}catch(e){}});
+  function afterConnect(r){
+    if(r.conflicts.length){SYNC.setSt('warn','Choose which copy to keep.');pendC=r;sRender();return}
+    if(r.applied.length){location.reload();return}
+    SYNC.startTimer();SYNC.setSt('ok','Connected. Your data is now backed up.');sRender();
+  }
+  var pendC=null;
+  function connect(mode){
+    var url=document.getElementById('s-url').value,anon=document.getElementById('s-anon').value,em=document.getElementById('s-email').value.trim(),pw=document.getElementById('s-pw').value;
+    if(!/^https:\/\/.+/.test(url.trim())||!anon.trim()||!em||!pw){SYNC.setSt('err','Fill in the project URL, public key, email and password.');return}
+    if(pw.length<6&&mode==='up'){SYNC.setSt('err','Use a password of at least 6 characters.');return}
+    SYNC.saveCfg({url:url,anon:anon,email:em});
+    SYNC.auth(mode,em,pw).then(function(res){
+      if(res==='confirm'){SYNC.setSt('warn','Account created. Open the email from Supabase to confirm, then press Sign in.');return}
+      SYNC.setSt('busy','Syncing...');return SYNC.reconcile().then(afterConnect);
+    }).catch(function(e){SYNC.setSt('err',SYNC.explain(e))});
+  }
+  document.getElementById('s-in').addEventListener('click',function(){connect('in')});
+  document.getElementById('s-up').addEventListener('click',function(){connect('up')});
+  document.getElementById('s-pw').addEventListener('keydown',function(e){if(e.key==='Enter')connect('in')});
+  document.getElementById('s-now').addEventListener('click',function(){SYNC.setSt('busy','Syncing...');SYNC.reconcile().then(function(r){if(r.conflicts.length){pendC=r;sRender();return}if(r.applied.length){document.getElementById('reloadbar').hidden=false}SYNC.setSt('ok','Up to date.');sRender()}).catch(function(e){SYNC.setSt(e.status===0?'warn':'err',SYNC.explain(e))})});
+  document.getElementById('s-out').addEventListener('click',function(){SYNC.signOut();sRender()});
+  function choose(c){var r=pendC||SYNC.conflicts();if(!r)return;SYNC.resolve(c,r.conflicts,r.remote).then(function(n){pendC=null;SYNC.clearConflicts();SYNC.startTimer();if(n||r.applied.length)location.reload();else{SYNC.setSt('ok','Done. Your data is now backed up.');sRender()}}).catch(function(e){SYNC.setSt('err',SYNC.explain(e))})}
+  document.getElementById('sc-cloud').addEventListener('click',function(){choose('cloud')});
+  document.getElementById('sc-local').addEventListener('click',function(){choose('local')});
+  document.getElementById('s-bak').addEventListener('click',function(){var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(SYNC.backups(),null,1)],{type:'application/json'}));a.download='local-backups-before-sync.json';document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},500)});
+  SYNC.boot(function(){
+    pendC=SYNC.conflicts();
+    show(start,false);
+    notify();sRender();
+    if(pendC)openSync();
+  });
 })();
 </script>
 </body>
