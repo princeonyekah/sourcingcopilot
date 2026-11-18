@@ -192,7 +192,14 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
     function canon(o){if(Array.isArray(o))return '['+o.map(canon).join(',')+']';if(o&&typeof o==='object')return '{'+Object.keys(o).sort().map(function(k){return JSON.stringify(k)+':'+canon(o[k])}).join(',')+'}';return JSON.stringify(o)}
     function hash(s){var h1=0xdeadbeef,h2=0x41c6ce57,ch;for(var i=0;i<s.length;i++){ch=s.charCodeAt(i);h1=Math.imul(h1^ch,2654435761);h2=Math.imul(h2^ch,1597334677)}
       h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);return (4294967296*(2097151&h2)+(h1>>>0)).toString(36)+s.length}
-    function clean(key,o){if(key==='sn-company-links-v2'&&o&&typeof o==='object'&&!Array.isArray(o)){o=JSON.parse(JSON.stringify(o));delete o.key;delete o.apify}return o}
+    /* Postgres jsonb refuses \u0000 and lone surrogates ("unsupported Unicode escape sequence"). Strip them so one odd pasted character can never block sync. */
+    function scrubStr(t){return t.indexOf('\u0000')<0&&!/[\ud800-\udfff]/.test(t)?t:t.replace(/\u0000/g,'').replace(/[\ud800-\udbff](?![\udc00-\udfff])/g,'').replace(/(^|[^\ud800-\udbff])[\udc00-\udfff]/g,'$1')}
+    function scrub(o){if(typeof o==='string')return scrubStr(o);if(Array.isArray(o))return o.map(scrub);if(o&&typeof o==='object'){var r={};for(var k in o)r[scrubStr(k)]=scrub(o[k]);return r}return o}
+    /* Keep the cloud copy lean for the Supabase free tier (500 MB): drop raw AI replies, which are only a debugging view and can be regenerated. */
+    function slim(key,o){if(key==='sourcing-copilot-v1'&&o&&Array.isArray(o.projects)){o.projects.forEach(function(p){(p.items||[]).forEach(function(i){if(i.raw)i.raw='';if(i.ice&&i.ice.raw)i.ice.raw=''})})}return o}
+    var MAXKEY=8*1024*1024,FREE=500*1024*1024;
+    function mb(n){return n>=1048576?(n/1048576).toFixed(1)+' MB':Math.max(1,Math.round(n/1024))+' KB'}
+    function clean(key,o){o=slim(key,scrub(o));if(key==='sn-company-links-v2'&&o&&typeof o==='object'&&!Array.isArray(o)){o=JSON.parse(JSON.stringify(o));delete o.key;delete o.apify}return o}
     function local(key){var raw=null;try{raw=localStorage.getItem(key)}catch(e){}if(raw==null)return null;var o;try{o=JSON.parse(raw)}catch(e){return null}o=clean(key,o);return {raw:raw,obj:o,h:hash(canon(o))}}
     function setSt(state,msg){st.state=state;st.msg=msg||'';onChange(st)}
     function err(status,msg){var e=new Error(msg);e.status=status;return e}
@@ -202,6 +209,12 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
       if(e&&e.status===403&&/secret|service/i.test(e.message||''))return 'That is a secret key. Use the publishable or anon key instead.';
       if(e&&(e.status===404||e.code==='PGRST205'||e.code==='42P01'))return 'The kv table was not found. Run the setup SQL in Supabase first.';
       if(e&&e.status===0)return 'Offline. Changes will sync when the connection is back.';
+      var m0=(e&&e.message)||'';
+      if(/unicode escape|22P05|\\u0000/i.test(m0)||(e&&e.code==='22P05'))return 'A hidden character in your data was rejected by Supabase. Press Save again: the app now strips these automatically.';
+      if(e&&(e.status===413||/payload too large|too large|54000|program limit/i.test(m0)))return 'One item is too big to sync to the cloud. Remove very large pasted profiles or sheets, then try again.';
+      if(e&&(e.code==='53100'||e.code==='53200'||/disk full|no space|quota|could not extend|read-only transaction|exceeded/i.test(m0)))return 'Your Supabase free storage (500 MB) is full or the project is paused. Free some space in Supabase (Database, Table Editor, kv) or open the project dashboard to resume it. Your data is still safe in this browser.';
+      if(e&&e.status===429)return 'Supabase is rate limiting requests. Sync will retry shortly.';
+      if(e&&e.status>=500)return 'Supabase had a temporary problem ('+e.status+'). Sync will retry shortly. Your data is safe in this browser.';
       return (e&&e.message)||'Something went wrong.';
     }
     function req(path,opts,useToken){
@@ -241,11 +254,21 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
     }
     function pull(){return authed(function(){return req('/rest/v1/kv?select=key,value,updated_at&key=not.like.cloud:*',{},true)}).then(function(rows){var m={};(rows||[]).forEach(function(r){m[r.key]=r});return m})}
     function pushKeys(keys,keepalive){
-      var rows=[];keys.forEach(function(k){var L=local(k);if(L)rows.push({key:k,value:L.obj,updated_at:new Date().toISOString(),_h:L.h})});
-      if(!rows.length)return Promise.resolve(0);
-      var body=rows.map(function(r){return {key:r.key,value:r.value,updated_at:r.updated_at}});
-      return authed(function(){return req('/rest/v1/kv?on_conflict=user_id,key',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(body),keepalive:keepalive},true)}).then(function(){
-        rows.forEach(function(r){meta[r.key]={h:r._h,rt:r.updated_at,lt:Date.now()}});jset(METAK,meta);return rows.length});
+      var rows=[],big=[];keys.forEach(function(k){var L=local(k);if(!L)return;var js=JSON.stringify(L.obj);if(js.length>MAXKEY){big.push(k);return}rows.push({key:k,value:L.obj,updated_at:new Date().toISOString(),_h:L.h,_sz:js.length})});
+      var done=function(r){meta[r.key]={h:r._h,rt:r.updated_at,lt:Date.now(),sz:r._sz}};
+      var send=function(rs,ka){var body=rs.map(function(r){return {key:r.key,value:r.value,updated_at:r.updated_at}});
+        return authed(function(){return req('/rest/v1/kv?on_conflict=user_id,key',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(body),keepalive:ka},true)}).then(function(){rs.forEach(done)})};
+      var fin=function(){jset(METAK,meta);var tot=0;for(var k in meta)tot+=(meta[k]&&meta[k].sz)||0;st.bytes=tot;
+        if(big.length){var e=err(413,'"'+big.join(', ')+'" is over '+mb(MAXKEY)+' so it was not synced. The rest is saved.');throw e}
+        return rows.length};
+      if(!rows.length)return Promise.resolve(0).then(fin);
+      return send(rows,keepalive).then(fin,function(e){
+        /* One bad key must not block the others: retry each key alone, keep what saves, report what does not. */
+        if(rows.length<2||e.status===0||e.status===401)throw e;
+        var bad=[],last=e;
+        return rows.reduce(function(p,r){return p.then(function(){return send([r],false)}).catch(function(x){bad.push(r.key);last=x})},Promise.resolve()).then(function(){
+          if(bad.length){var y=err(last.status,explain(last)+' (not saved: '+bad.join(', ')+')');y.code=last.code;throw y}
+          return fin()})});
     }
     function applyRemote(key,R){
       var L=local(key);if(L&&L.raw)try{localStorage.setItem(BAK+key,L.raw)}catch(e){}
@@ -302,7 +325,7 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
       if(busy||!ses)return;
       var ks=changed();if(!ks.length)return;
       busy=true;setSt('busy','Saving to the cloud...');
-      pushKeys(ks).then(function(){st.last=Date.now();setSt('ok','Saved to the cloud.')},function(e){setSt(e.status===0?'warn':'err',explain(e))}).then(function(){busy=false});
+      pushKeys(ks).then(function(){st.last=Date.now();setSt('ok','Saved to the cloud'+(st.bytes?' (about '+mb(st.bytes)+' of the 500 MB free plan).':'.'))},function(e){setSt(e.status===0?'warn':'err',explain(e))}).then(function(){busy=false});
     }
     function startTimer(){if(timer)return;timer=setInterval(tick,4000)}
     function check(){
@@ -316,7 +339,7 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
     var CK='cloud:af:';
     var cloud={
       list:function(){return authed(function(){return req('/rest/v1/kv?select=key,updated_at,name:value-%3E%3Ename,n:value-%3E%3En&key=like.'+encodeURIComponent(CK)+'*&order=updated_at.desc',{},true)}).then(function(rows){return (rows||[]).map(function(r){return {id:r.key.slice(CK.length),name:r.name||r.key.slice(CK.length),n:+r.n||0,updated_at:r.updated_at}})})},
-      put:function(id,obj){return authed(function(){return req('/rest/v1/kv?on_conflict=user_id,key',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([{key:CK+id,value:obj,updated_at:new Date().toISOString()}])},true)})},
+      put:function(id,obj){if(JSON.stringify(scrub(obj)).length>MAXKEY*2)return Promise.reject(err(413,'This sheet is over '+mb(MAXKEY*2)+' and would not fit comfortably in the Supabase free plan. Split it into smaller sheets.'));return authed(function(){return req('/rest/v1/kv?on_conflict=user_id,key',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([{key:CK+id,value:scrub(obj),updated_at:new Date().toISOString()}])},true)})},
       get:function(id){return authed(function(){return req('/rest/v1/kv?select=value&key=eq.'+encodeURIComponent(CK+id),{},true)}).then(function(rows){if(!rows||!rows[0])throw err(404,'That sheet is no longer in the cloud.');return rows[0].value})},
       del:function(id){return authed(function(){return req('/rest/v1/kv?key=eq.'+encodeURIComponent(CK+id),{method:'DELETE',headers:{Prefer:'return=minimal'}},true)})}
     };
