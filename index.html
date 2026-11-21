@@ -52,6 +52,7 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
 .barbtns{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}.barbtns .keybtn{margin-left:0}
 .keybtn.off .dot{background:#8a9a95}.keybtn.err .dot{background:#c0392b}.keybtn.busy .dot{background:#3a41c6}
 [hidden]{display:none!important}
+.gate{position:fixed;left:0;right:0;bottom:0;top:58px;z-index:40;background:var(--bg,#fff);display:flex;align-items:center;justify-content:center;padding:24px}.gate[hidden]{display:none}.gbox{max-width:460px;text-align:center}.gbox h2{font-size:20px;margin:0 0 8px}.gbox p{color:#666;margin:0 0 16px;font-size:14px}.grow{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}.grow button{font:inherit;font-weight:500;border:1px solid #bbb;background:#fff;color:#222;border-radius:8px;padding:8px 14px;cursor:pointer}.grow button:not([hidden]):first-child{background:#1f4fd8;color:#fff;border-color:#1f4fd8}
 .reloadbar{position:sticky;top:0;z-index:40;background:#fdf3d8;color:#5a4300;border-bottom:1px solid #e8d48f;padding:8px 16px;display:flex;gap:12px;align-items:center;justify-content:center;font-size:14px}
 .reloadbar button{font:inherit;font-weight:500;border:1px solid #c9b25f;background:#fff;color:#3a2f0d;border-radius:8px;padding:4px 12px;cursor:pointer}
 .ksheet.wide{max-width:560px;max-height:92vh;overflow:auto}
@@ -88,6 +89,7 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
     <div class="barbtns"><button type="button" class="keybtn off" id="syncbtn" aria-haspopup="dialog"><span class="dot"></span><span id="synclbl">Cloud sync</span></button><button type="button" class="keybtn" id="keybtn" aria-haspopup="dialog"><span class="dot"></span><span id="keylbl">API key</span></button></div>
   </div>
 </header>
+<div class="gate" id="gate"><div class="gbox"><h2 id="gt">Loading your data from Supabase...</h2><p id="gm"></p><div class="grow"><button type="button" id="g-sign" hidden>Sign in</button><button type="button" id="g-retry" hidden>Try again</button><button type="button" id="g-off" hidden>Open without saving anything</button></div></div></div>
 <div class="reloadbar" id="reloadbar" hidden><span>Newer data arrived from another device.</span><button type="button" id="reloadgo">Reload to use it</button><button type="button" id="reloadx" aria-label="Dismiss" title="Dismiss">Dismiss</button></div>
 <div class="kmodal" id="smodal" hidden role="dialog" aria-modal="true" aria-labelledby="stitle">
   <div class="ksheet wide">
@@ -146,13 +148,30 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
   'use strict';
   /* One place for the Claude API key. Copilot reads the same storage name, and the tools call this hub. */
   var KKEY='sourcing-copilot-key';
-  function lget(){try{return localStorage.getItem(KKEY)||''}catch(e){return ''}}
+  /* Storage layer. Once your data is loaded from Supabase it lives in memory only (cloud-first): nothing but the sign-in details is kept in this browser. */
+  var LOGIN={'sc-sync-cfg':1,'sc-sync-session':1},CF=false,MEM={},LOCK={};window.__SC_LOCK=LOCK;
+  var ST={
+    get:function(k){if(CF&&!LOGIN[k])return Object.prototype.hasOwnProperty.call(MEM,k)?MEM[k]:null;try{return localStorage.getItem(k)}catch(e){return null}},
+    set:function(k,v){if(CF&&!LOGIN[k]){MEM[k]=String(v);return}localStorage.setItem(k,v)},
+    del:function(k){if(CF&&!LOGIN[k]){delete MEM[k];return}localStorage.removeItem(k)},
+    keys:function(){if(CF)return Object.keys(MEM);var o=[];try{for(var i=0;i<localStorage.length;i++)o.push(localStorage.key(i))}catch(e){}return o}
+  };
+  var kick=function(){};
+  /* What the apps see as localStorage inside their frames. */
+  window.__SC_ST={api:{
+    getItem:function(k){var v=ST.get(String(k));return v==null?null:v},
+    setItem:function(k,v){k=String(k);if(LOCK[k])return;ST.set(k,String(v));kick()},
+    removeItem:function(k){k=String(k);if(LOCK[k])return;ST.del(k);kick()},
+    clear:function(){ST.keys().forEach(function(k){if(!LOGIN[k]&&!LOCK[k])ST.del(k)});kick()},
+    key:function(i){var a=ST.keys().filter(function(k){return !LOGIN[k]});return a[i]==null?null:a[i]},
+    get length(){return ST.keys().filter(function(k){return !LOGIN[k]}).length}}};
+  function lget(){try{return ST.get(KKEY)||''}catch(e){return ''}}
   function sget(){try{return sessionStorage.getItem(KKEY)||''}catch(e){return ''}}
   function getKey(){return (sget()||lget()).trim()}
   function setKey(k,remember){
-    try{localStorage.removeItem(KKEY)}catch(e){} try{sessionStorage.removeItem(KKEY)}catch(e){}
+    try{ST.del(KKEY)}catch(e){} try{sessionStorage.removeItem(KKEY)}catch(e){}
     if(!k)return;
-    try{(remember?localStorage:sessionStorage).setItem(KKEY,k)}catch(e){}
+    try{if(remember||CF)ST.set(KKEY,k);else sessionStorage.setItem(KKEY,k)}catch(e){}
   }
   function notify(){
     Array.prototype.forEach.call(document.querySelectorAll('iframe'),function(f){try{f.contentWindow.dispatchEvent(new Event('sc-key'))}catch(e){}});
@@ -184,8 +203,8 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
   var SYNC=(function(){
     var KEYS=['sourcing-copilot-v1','sn-company-links-v2','saved-searches-v1','li-url-checker-v2','profile-calibration-v1','profile-calibration-round-v1','approved-feed-projects-v1','approved-feed-decisions-v1','sc-secrets-v1'];
     var CFGK='sc-sync-cfg',SESK='sc-sync-session',METAK='sc-sync-meta',BAK='sc-sync-bak-';
-    function jget(k){try{return JSON.parse(localStorage.getItem(k)||'null')}catch(e){return null}}
-    function jset(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+    function jget(k){try{return JSON.parse(ST.get(k)||'null')}catch(e){return null}}
+    function jset(k,v){try{ST.set(k,JSON.stringify(v))}catch(e){}}
     var cfg=jget(CFGK)||{url:'',anon:'',email:''},ses=jget(SESK),meta=jget(METAK)||{};
     var st={state:'off',msg:'',last:0},held={},busy=false,timer=null,onChange=function(){},pendingConflicts=null;
     function base(){return String(cfg.url||'').trim().replace(/\/+$/,'')}
@@ -200,7 +219,7 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
     var MAXKEY=8*1024*1024,FREE=500*1024*1024;
     function mb(n){return n>=1048576?(n/1048576).toFixed(1)+' MB':Math.max(1,Math.round(n/1024))+' KB'}
     function clean(key,o){o=slim(key,scrub(o));if(key==='sn-company-links-v2'&&o&&typeof o==='object'&&!Array.isArray(o)){o=JSON.parse(JSON.stringify(o));delete o.key;delete o.apify}return o}
-    function local(key){var raw=null;try{raw=localStorage.getItem(key)}catch(e){}if(raw==null)return null;var o;try{o=JSON.parse(raw)}catch(e){return null}o=clean(key,o);return {raw:raw,obj:o,h:hash(canon(o))}}
+    function local(key){var raw=null;try{raw=ST.get(key)}catch(e){}if(raw==null)return null;var o;try{o=JSON.parse(raw)}catch(e){return null}o=clean(key,o);return {raw:raw,obj:o,h:hash(canon(o))}}
     function setSt(state,msg){st.state=state;st.msg=msg||'';onChange(st)}
     function err(status,msg){var e=new Error(msg);e.status=status;return e}
     function explain(e){
@@ -228,7 +247,7 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
     }
     function saveSes(j){ses={access:j.access_token,refresh:j.refresh_token,exp:Date.now()+(j.expires_in||3600)*1000,uid:j.user&&j.user.id,email:j.user&&j.user.email};jset(SESK,ses)}
     var refreshing=null;
-    function expire(){ses=null;try{localStorage.removeItem(SESK)}catch(x){}var e=err(401,'Session ended');e.expired=true;return e}
+    function expire(){ses=null;try{ST.del(SESK)}catch(x){}var e=err(401,'Session ended');e.expired=true;return e}
     function refresh(){
       if(refreshing)return refreshing;
       var used=ses.refresh;
@@ -272,15 +291,14 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
     }
     /* After cloud data is written to this browser, the apps still hold the OLD copy in memory and would write it back on reload
        (their unload handlers), which then looks like a newer change and overwrites the cloud. Block app writes to that key until the page reloads. */
-    var LOCK={};window.__SC_LOCK=LOCK;
     function lockApps(key){LOCK[key]=1;Array.prototype.forEach.call(document.querySelectorAll('iframe'),function(f){try{
       var w=f.contentWindow;if(!w||w.__scLocked)return;var P=w.Storage.prototype,o=P.setItem;
       P.setItem=function(k,v){try{if(window.parent&&window.parent.__SC_LOCK&&window.parent.__SC_LOCK[k])return}catch(e){}return o.call(this,k,v)};w.__scLocked=1}catch(e){}})}
     function applyRemote(key,R){
-      var L=local(key);if(L&&L.raw)try{localStorage.setItem(BAK+key,L.raw)}catch(e){}
+      var L=local(key);if(L&&L.raw&&!CF)try{ST.set(BAK+key,L.raw)}catch(e){}
       var v=R.value;
-      if(key==='sn-company-links-v2'&&v&&typeof v==='object'){var cur=null;try{cur=JSON.parse(localStorage.getItem(key)||'null')}catch(e){}v.key=(cur&&cur.key)||'';v.apify=(cur&&cur.apify)||''}
-      try{localStorage.setItem(key,JSON.stringify(v))}catch(e){return false}
+      if(key==='sn-company-links-v2'&&v&&typeof v==='object'){var cur=null;try{cur=JSON.parse(ST.get(key)||'null')}catch(e){}v.key=(cur&&cur.key)||'';v.apify=(cur&&cur.apify)||''}
+      try{ST.set(key,JSON.stringify(v))}catch(e){return false}
       var c=local(key);meta[key]={h:c?c.h:hash(canon(clean(key,v))),rt:R.updated_at,lt:Date.now()};held[key]=true;lockApps(key);try{snapReset(key,clean(key,v))}catch(e){}return true;
     }
     /* Compare this browser with the cloud, key by key. */
@@ -334,7 +352,7 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
       var pushes=[],applied=0,bks=[];
       conflicts.forEach(function(k){
         if(choice==='cloud'){if(applyRemote(k,remote[k]))applied++}
-        else{try{localStorage.setItem(BAK+'cloud-'+k,JSON.stringify(remote[k].value))}catch(e){}pushes.push(k);bks.push({key:'cloud:bk:'+k,value:remote[k].value,updated_at:new Date().toISOString()})}
+        else{try{if(!CF)ST.set(BAK+'cloud-'+k,JSON.stringify(remote[k].value))}catch(e){}pushes.push(k);bks.push({key:'cloud:bk:'+k,value:remote[k].value,updated_at:new Date().toISOString()})}
       });
       jset(METAK,meta);
       /* Keep the cloud's earlier copy inside the cloud too, so a wrong choice can be undone. */
@@ -358,13 +376,14 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
       busy=true;setSt('busy','Saving to the cloud...');
       pushKeys(ks).then(function(){st.last=Date.now();setSt('ok','Saved to the cloud'+(st.bytes?' (about '+mb(st.bytes)+' of the 500 MB free plan).':'.'))},function(e){setSt(e.status===0?'warn':'err',explain(e))}).then(function(){busy=false});
     }
-    function startTimer(){if(aq.length)schedule(3000);if(timer)return;timer=setInterval(tick,4000)}
+    function startTimer(){if(aq.length)schedule(3000);if(timer)return;timer=setInterval(tick,2000);kick=function(){if(ses)setTimeout(tick,700)}}
     function check(){
       if(busy||!ses)return;busy=true;
       reconcile().then(function(r){st.last=Date.now();if(r.applied.length)onChange(st,'reload');else setSt('ok','Up to date.')},function(e){setSt(e.status===0?'warn':'err',explain(e))}).then(function(){busy=false});
     }
     document.addEventListener('visibilitychange',function(){if(!document.hidden)check()});
     window.addEventListener('pagehide',function(){try{activity.flush(true)}catch(e){}try{var ks=changed().filter(function(k){var L=local(k);return L&&!isBlank(k,L.obj)});if(ks.length&&ses&&ses.exp>Date.now())pushKeys(ks,true)}catch(e){}});
+    document.addEventListener('visibilitychange',function(){if(document.hidden){try{activity.flush(true)}catch(e){}try{var ks=changed().filter(function(k){var L=local(k);return L&&!isBlank(k,L.obj)});if(ks.length&&ses&&ses.exp>Date.now())pushKeys(ks,true)}catch(e){}}});
     setInterval(function(){if(!document.hidden)check()},90000);
     /* Cloud library: big sheets kept in Supabase on demand, never pulled by the normal sync. Rows live in the same kv table under cloud:af:<id>. */
     var CK='cloud:af:';
@@ -477,17 +496,33 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
           return 'confirm';
         });
       },
-      signOut:function(){var t=ses&&ses.access;ses=null;refreshing=null;try{localStorage.removeItem(SESK)}catch(e){}if(t&&base())fetch(base()+'/auth/v1/logout',{method:'POST',headers:{apikey:cfg.anon,Authorization:'Bearer '+t}}).catch(function(){});setSt('off','Signed out.')},
+      signOut:function(){var t=ses&&ses.access;ses=null;refreshing=null;try{ST.del(SESK)}catch(e){}if(t&&base())fetch(base()+'/auth/v1/logout',{method:'POST',headers:{apikey:cfg.anon,Authorization:'Bearer '+t}}).catch(function(){});setSt('off','Signed out.')},
       reconcile:reconcile,resolve:resolve,tick:tick,check:check,startTimer:startTimer,explain:explain,setSt:setSt,
       boot:function(cb){
-        if(!this.configured()||!ses){setSt('off','');cb();return}
-        var done=false,fin=function(){if(!done){done=true;cb()}};
-        setTimeout(fin,5000);setSt('busy','Loading your cloud data...');busy=true;
-        reconcile().then(function(r){st.last=Date.now();held={};if(r.conflicts.length){pendingConflicts=r}setSt(r.conflicts.length?'warn':'ok',r.conflicts.length?'Choose which copy to keep.':'Synced.')},function(e){setSt(e.status===0?'warn':'err',explain(e))}).then(function(){busy=false;startTimer();fin()});
+        if(!this.configured()||!ses){setSt('off','');cb({gate:true});return}
+        setSt('busy','Loading your data from Supabase...');busy=true;
+        var fail=function(e){busy=false;setSt(e&&e.status===0?'warn':'err',explain(e));cb({error:explain(e)})};
+        var legacy=KEYS.some(function(k){var raw=null;try{raw=localStorage.getItem(k)}catch(e){}if(raw==null)return false;try{return !isBlank(k,JSON.parse(raw))}catch(e){return false}});
+        (legacy?reconcile():Promise.resolve({conflicts:[],applied:[]})).then(function(r){
+          if(r.conflicts&&r.conflicts.length){pendingConflicts=r;busy=false;setSt('warn','Choose which copy to keep.');cb({conflict:true});return}
+          return pull().then(function(remote){
+            /* Data from an older version of this page may still sit in the browser. Only remove it once the cloud holds the same thing. */
+            var safe=true;KEYS.forEach(function(k){var L=local(k);if(!L||isBlank(k,L.obj))return;var R=remote[k];if(!R||hash(canon(clean(k,R.value)))!==L.h)safe=false});
+            if(!safe){busy=false;setSt('err','Some data in this browser is not in the cloud yet. Press Sync now, then reload.');cb({error:'Some data in this browser is not in the cloud yet. Press Sync now, then reload.',sync:true});return}
+            var purge=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&!LOGIN[k]&&(KEYS.indexOf(k)>=0||k===KKEY||k===METAK||k===SNK||k===QK||k.indexOf(BAK)===0))purge.push(k)}
+            purge.forEach(function(k){try{localStorage.removeItem(k)}catch(e){}});
+            CF=true;MEM={};meta={};held={};
+            KEYS.forEach(function(k){var R=remote[k];if(!R)return;MEM[k]=JSON.stringify(R.value);meta[k]={h:hash(canon(clean(k,R.value))),rt:R.updated_at,lt:Date.now()}});
+            jset(METAK,meta);try{KEYS.forEach(function(k){var L=local(k);if(L)snapReset(k,L.obj)})}catch(e){}applyMirror();
+            st.last=Date.now();busy=false;setSt('ok','Loaded from Supabase.');startTimer();cb({});
+          })
+        }).catch(fail);
       },
+      memOnly:function(){CF=true;MEM={};meta={};setSt('warn','Working without the cloud. Nothing is being saved.')},
+      cloudFirst:function(){return CF},dirtyKick:function(f){kick=f},
       inspect:inspect,fetchAll:fetchAll,
       conflicts:function(){return pendingConflicts},clearConflicts:function(){pendingConflicts=null},
-      backups:function(){var o={};for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k.indexOf(BAK)===0)o[k.slice(BAK.length)]=localStorage.getItem(k)}return o},
+      backups:function(){var o={};ST.keys().forEach(function(k){if(k.indexOf(BAK)===0)o[k.slice(BAK.length)]=ST.get(k)});return o},
       setBusy:function(b){busy=b}
     };
   })();
@@ -496,7 +531,10 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
   function decode(id){
     var b=atob(document.getElementById('app-'+id).textContent.trim()), u=new Uint8Array(b.length);
     for(var i=0;i<b.length;i++)u[i]=b.charCodeAt(i);
-    return new TextDecoder('utf-8').decode(u);
+    var html=new TextDecoder('utf-8').decode(u);
+    /* Inside the frame, localStorage is this page's in-memory copy of your Supabase data, so nothing is written to the browser. */
+    var pre='<script>(function(){try{var P=parent.__SC_ST;if(!P)return;Object.defineProperty(window,"localStorage",{configurable:true,get:function(){return P.api}})}catch(e){}})()<\/script>';
+    return html.replace(/<head[^>]*>/i,function(m){return m+pre})||pre+html;
   }
   function mount(id){
     if(loaded[id])return;
@@ -588,11 +626,8 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
     SYNC.auth(mode,em,pw).then(function(res){
       if(res==='exists'){SYNC.setSt('warn','That email already has an account. Press Sign in.');sRender();return}
       if(res==='confirm'){SYNC.setSt('warn','Account created. Open the email from Supabase to confirm, then press Sign in. (Or turn off Confirm email in Supabase.)');sRender();return}
-      SYNC.setSt('busy','Syncing...');sRender();
-      return SYNC.reconcile().then(afterConnect,function(e){
-        /* Signed in fine; only the data step failed. Say so, keep the session. */
-        SYNC.setSt('err','Signed in, but the sync step failed: '+(e.status===404||e.code==='PGRST205'||e.code==='42P01'?'the kv table was not found. Run the setup SQL in Supabase, then press Sync now.':SYNC.explain(e)));sRender();
-      });
+      SYNC.setSt('busy','Loading your data...');sRender();
+      location.reload();
     }).catch(function(e){SYNC.setSt('err',SYNC.friendly(e,mode));sRender()});
   }
   document.getElementById('s-in').addEventListener('click',function(){connect('in')});
@@ -625,15 +660,22 @@ h1{font-family:var(--font-display);font-size:clamp(26px,5vw,36px);line-height:1.
   ['s-fetch','s-restore'].forEach(function(id){var b=document.getElementById(id),t=b.textContent;b.addEventListener('click',function(){
     if(fArm!==id){fArm=id;b.textContent='Replace this browser with the cloud copy? Press again';setTimeout(function(){if(fArm===id){fArm=null;b.textContent=t}},6000);return}
     fArm=null;b.textContent=t;SYNC.activity.log('sync',id==='s-restore'?'restored_earlier_cloud_copy':'fetched_everything_from_cloud',null,{});doFetch(id==='s-restore')})});
-  function choose(c){var r=pendC||SYNC.conflicts();if(!r)return;SYNC.resolve(c,r.conflicts,r.remote).then(function(n){pendC=null;SYNC.clearConflicts();SYNC.startTimer();if(n||r.applied.length)location.reload();else{SYNC.setSt('ok','Done. Your data is now backed up.');sRender()}}).catch(function(e){SYNC.setSt('err',SYNC.explain(e))})}
+  function choose(c){var r=pendC||SYNC.conflicts();if(!r)return;SYNC.resolve(c,r.conflicts,r.remote).then(function(n){pendC=null;SYNC.clearConflicts();location.reload()}).catch(function(e){SYNC.setSt('err',SYNC.explain(e))})}
   document.getElementById('sc-cloud').addEventListener('click',function(){choose('cloud')});
   document.getElementById('sc-local').addEventListener('click',function(){choose('local')});
   document.getElementById('s-bak').addEventListener('click',function(){var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(SYNC.backups(),null,1)],{type:'application/json'}));a.download='local-backups-before-sync.json';document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},500)});
-  SYNC.boot(function(){
-    pendC=SYNC.conflicts();
+  var gate=document.getElementById('gate'),gt=document.getElementById('gt'),gm=document.getElementById('gm'),gS=document.getElementById('g-sign'),gR=document.getElementById('g-retry'),gO=document.getElementById('g-off');
+  function gset(t,m,sign,retry,off){gt.textContent=t;gm.textContent=m||'';gS.hidden=!sign;gR.hidden=!retry;gO.hidden=!off}
+  gS.addEventListener('click',openSync);gR.addEventListener('click',function(){location.reload()});
+  gO.addEventListener('click',function(){SYNC.memOnly();gate.hidden=true;show(start,false);notify();sRender()});
+  SYNC.boot(function(r){
+    r=r||{};pendC=SYNC.conflicts();
+    if(r.gate){gset('Sign in to load your data','Everything you save lives in Supabase, nothing is kept in this browser. Sign in to fetch it.',true,false,true);notify();sRender();openSync();return}
+    if(r.conflict){gset('Choose which copy to keep','This browser holds older data that differs from Supabase.',true,false,false);gS.textContent='Choose';notify();sRender();openSync();return}
+    if(r.error){gset(r.sync?'Not everything is in Supabase yet':'Could not load your data',r.error,false,true,false);gR.hidden=false;sRender();return}
+    gate.hidden=true;
     show(start,false);
     notify();sRender();
-    if(pendC)openSync();
   });
 })();
 </script>
